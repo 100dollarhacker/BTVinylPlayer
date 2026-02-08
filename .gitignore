@@ -1,0 +1,7 @@
+#We don't need dirty laundry in GITHUB
+/build
+
+#ignore old configuraion files
+sdkconfig.ci.test
+sdkconfig.defaults
+sdkconfig.old
