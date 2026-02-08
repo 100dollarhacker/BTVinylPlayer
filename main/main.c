@@ -365,6 +365,22 @@ static void bt_app_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     bt_app_work_dispatch(bt_app_av_sm_hdlr, event, param, sizeof(esp_a2d_cb_param_t), NULL);
 }
 
+
+uint8_t C2data[1024];
+
+
+TaskHandle_t Task0;
+void Task0code( void * parameter) {
+  while(true) {
+    for (int i = 0 ; i < 512 ; i++) {
+        C2data[2*i] = i*10;
+        C2data[2*i+1] = i*10;
+    }
+
+    vTaskDelay(1);
+  }
+  
+}
 #define c3_frequency  130.81
 #define PI 3.141592
 /* generate some random noise to simulate source audio */
@@ -402,8 +418,8 @@ static int32_t bt_app_a2d_data_cb(uint8_t *data, int32_t len)
     for (int i = 0; i < (len >> 1); i++) {
 
         //double angle = double_Pi * c3_frequency * m_time + m_phase;
-        p_buf[2*i] =  i ;// m_amplitude * sin(angle);
-        p_buf[2*i+1]=  i;//p_buf[2*i] ;
+        p_buf[2*i] =  C2data[i*2] ;// m_amplitude * sin(angle);
+        p_buf[2*i+1]=  C2data[i*2+1];//p_buf[2*i] ;
         m_time += m_deltaTime;
     //    p_buf[i] = rand() % (1 << 16);
     }
@@ -814,6 +830,18 @@ void app_main(void)
         ESP_LOGE(BT_AV_TAG, "%s enable bluedroid failed", __func__);
         return;
     }
+
+
+  
+  // Create a task that will be executed in the Task0code() function, with priority 1 and executed on core 0
+  xTaskCreatePinnedToCore(
+                    Task0code,   /* Task function. */
+                    "Task0",     /* name of task. */
+                    10000,       /* Stack size of task */
+                    NULL,        /* parameter of the task */
+                    1,           /* priority of the task */
+                    &Task0,      /* Task handle to keep track of created task */
+                    1);          /* pin task to core 0 */
 
 #if (CONFIG_EXAMPLE_SSP_ENABLED == true)
     /* set default parameters for Secure Simple Pairing */
