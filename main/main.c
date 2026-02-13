@@ -28,6 +28,17 @@
 #include "esp_a2dp_api.h"
 #include "esp_avrc_api.h"
 
+// For ADC
+#include <string.h>
+#include <stdio.h>
+#include "sdkconfig.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_adc/adc_continuous.h"
+
+
 /* log tags */
 #define BT_AV_TAG             "BT_AV"
 #define BT_RC_CT_TAG          "RC_CT"
@@ -62,6 +73,21 @@ enum {
     APP_AV_MEDIA_STATE_STARTED,
     APP_AV_MEDIA_STATE_STOPPING,
 };
+
+
+
+#define EXAMPLE_ADC_UNIT                    ADC_UNIT_1
+#define EXAMPLE_ADC_CONV_MODE               ADC_CONV_SINGLE_UNIT_1
+#define EXAMPLE_ADC_ATTEN                   ADC_ATTEN_DB_12
+#define EXAMPLE_ADC_BIT_WIDTH               SOC_ADC_DIGI_MAX_BITWIDTH
+
+#define EXAMPLE_READ_LEN                    256
+static adc_channel_t channel[2] = {ADC_CHANNEL_6, ADC_CHANNEL_7};
+static TaskHandle_t s_task_handle;
+static const char *TAG = "EXAMPLE";
+
+
+
 
 /*********************************
  * STATIC FUNCTION DECLARATIONS
@@ -100,6 +126,10 @@ static void bt_app_av_state_connecting_hdlr(uint16_t event, void *param);
 static void bt_app_av_state_connected_hdlr(uint16_t event, void *param);
 static void bt_app_av_state_disconnecting_hdlr(uint16_t event, void *param);
 
+/* Main for ADC */
+void app_main_adc(void* );
+
+
 /*********************************
  * STATIC VARIABLE DEFINITIONS
  ********************************/
@@ -119,6 +149,49 @@ static const char remote_device_name[] = CONFIG_EXAMPLE_PEER_DEVICE_NAME;
 /*********************************
  * STATIC FUNCTION DEFINITIONS
  ********************************/
+
+
+static bool IRAM_ATTR s_conv_done_cb(adc_continuous_handle_t handle, const adc_continuous_evt_data_t *edata, void *user_data)
+{
+    BaseType_t mustYield = pdFALSE;
+    //Notify that ADC continuous driver has done enough number of conversions
+    vTaskNotifyGiveFromISR(s_task_handle, &mustYield);
+
+    return (mustYield == pdTRUE);
+}
+
+static void continuous_adc_init(adc_channel_t *channel, uint8_t channel_num, adc_continuous_handle_t *out_handle)
+{
+    adc_continuous_handle_t handle = NULL;
+
+    adc_continuous_handle_cfg_t adc_config = {
+        .max_store_buf_size = 2048,//1024,
+        .conv_frame_size = EXAMPLE_READ_LEN,
+    };
+    ESP_ERROR_CHECK(adc_continuous_new_handle(&adc_config, &handle));
+
+    adc_continuous_config_t dig_cfg = {
+        .sample_freq_hz = 44100,//20 * 1000,
+        .conv_mode = EXAMPLE_ADC_CONV_MODE,
+    };
+
+    adc_digi_pattern_config_t adc_pattern[SOC_ADC_PATT_LEN_MAX] = {0};
+    dig_cfg.pattern_num = channel_num;
+    for (int i = 0; i < channel_num; i++) {
+        adc_pattern[i].atten = EXAMPLE_ADC_ATTEN;
+        adc_pattern[i].channel = channel[i] & 0x7;
+        adc_pattern[i].unit = EXAMPLE_ADC_UNIT;
+        adc_pattern[i].bit_width = EXAMPLE_ADC_BIT_WIDTH;
+
+        ESP_LOGI(TAG, "adc_pattern[%d].atten is :%"PRIx8, i, adc_pattern[i].atten);
+        ESP_LOGI(TAG, "adc_pattern[%d].channel is :%"PRIx8, i, adc_pattern[i].channel);
+        ESP_LOGI(TAG, "adc_pattern[%d].unit is :%"PRIx8, i, adc_pattern[i].unit);
+    }
+    dig_cfg.adc_pattern = adc_pattern;
+    ESP_ERROR_CHECK(adc_continuous_config(handle, &dig_cfg));
+
+    *out_handle = handle;
+}
 
 static char *bda2str(esp_bd_addr_t bda, char *str, size_t size)
 {
@@ -366,21 +439,23 @@ static void bt_app_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 }
 
 
-uint8_t C2data[1024];
+int writeIndex = -1;
+int readIndex = -1;
+uint8_t C2data[2048];
 
 
 TaskHandle_t Task0;
-void Task0code( void * parameter) {
-  while(true) {
-    for (int i = 0 ; i < 512 ; i++) {
-        C2data[2*i] = i*10;
-        C2data[2*i+1] = i*10;
-    }
+// void Task0code( void * parameter) {
+//   while(true) {
+//     for (int i = 0 ; i < 512 ; i++) {
+//         C2data[2*i] = i*10;
+//         C2data[2*i+1] = i*10;
+//     }
 
-    vTaskDelay(1);
-  }
+//     vTaskDelay(1);
+//   }
   
-}
+// }
 #define c3_frequency  130.81
 #define PI 3.141592
 /* generate some random noise to simulate source audio */
@@ -413,16 +488,22 @@ static int32_t bt_app_a2d_data_cb(uint8_t *data, int32_t len)
 //}
 
 
-
+    if (readIndex == -1) {
+        if (writeIndex == -1)
+            readIndex = 0;
+        else 
+            readIndex = (writeIndex + sizeof(C2data)/2)%sizeof(C2data);
+    }
     int16_t *p_buf = (int16_t *)data;
     for (int i = 0; i < (len >> 1); i++) {
 
         //double angle = double_Pi * c3_frequency * m_time + m_phase;
-        p_buf[2*i] =  C2data[i*2] ;// m_amplitude * sin(angle);
-        p_buf[2*i+1]=  C2data[i*2+1];//p_buf[2*i] ;
+        p_buf[2*i] =  C2data[ readIndex + i*2] ;// m_amplitude * sin(angle);
+        p_buf[2*i+1]=  C2data[readIndex + i*2+1];//p_buf[2*i] ;
         m_time += m_deltaTime;
     //    p_buf[i] = rand() % (1 << 16);
     }
+    readIndex = (readIndex + len) % sizeof(C2data); 
 
 
     return len;
@@ -835,8 +916,8 @@ void app_main(void)
   
   // Create a task that will be executed in the Task0code() function, with priority 1 and executed on core 0
   xTaskCreatePinnedToCore(
-                    Task0code,   /* Task function. */
-                    "Task0",     /* name of task. */
+                    app_main_adc,   /* Task function. */
+                    "app_main_adc",     /* name of task. */
                     10000,       /* Stack size of task */
                     NULL,        /* parameter of the task */
                     1,           /* priority of the task */
@@ -862,4 +943,109 @@ void app_main(void)
     bt_app_task_start_up();
     /* Bluetooth device name, connection mode and profile set up */
     bt_app_work_dispatch(bt_av_hdl_stack_evt, BT_APP_STACK_UP_EVT, NULL, 0, NULL);
+}
+
+
+
+
+void app_main_adc( void * parameter) 
+{
+
+// void app_main_adc(void)
+// {
+    esp_err_t ret;
+    uint32_t ret_num = 0;
+    uint8_t result[EXAMPLE_READ_LEN] = {0};
+    memset(result, 0xcc, EXAMPLE_READ_LEN);
+
+    s_task_handle = xTaskGetCurrentTaskHandle();
+
+    ESP_LOGE("TASK", " Initing ADC .... ");
+
+
+    adc_continuous_handle_t handle = NULL;
+    continuous_adc_init(channel, sizeof(channel) / sizeof(adc_channel_t), &handle);
+
+    adc_continuous_evt_cbs_t cbs = {
+        .on_conv_done = s_conv_done_cb,
+    };
+    ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(handle, &cbs, NULL));
+    ESP_ERROR_CHECK(adc_continuous_start(handle));
+
+    int count = 0 ;
+    int i =0;
+
+    while (1) {
+
+        /**
+         * This is to show you the way to use the ADC continuous mode driver event callback.
+         * This `ulTaskNotifyTake` will block when the data processing in the task is fast.
+         * However in this example, the data processing (print) is slow, so you barely block here.
+         *
+         * Without using this event callback (to notify this task), you can still just call
+         * `adc_continuous_read()` here in a loop, with/without a certain block timeout.
+         */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+
+        while (1) {
+            count++;
+
+            ret = adc_continuous_read(handle, result, EXAMPLE_READ_LEN, &ret_num, 0);
+            if (ret == ESP_OK) {
+                // if (count % 1000000 ) 
+                    // ESP_LOGI("TASK", "ret is %x, ret_num is %"PRIu32" bytes", ret, ret_num);
+
+                adc_continuous_data_t parsed_data[ret_num / SOC_ADC_DIGI_RESULT_BYTES];
+                uint32_t num_parsed_samples = 0;
+
+
+                if (writeIndex == -1) {
+                    if (readIndex == -1)
+                        writeIndex = 0;
+                    else 
+                        writeIndex = (writeIndex + sizeof(C2data)/2)%sizeof(C2data);
+                }
+                // if (count % 50 == 0) ESP_LOGI("TASK", "ret is %x, ret_num is %"PRIu32" bytes writeIndex:%d count:%d", ret, ret_num, writeIndex, count);
+
+                esp_err_t parse_ret = adc_continuous_parse_data(handle, result, ret_num, parsed_data, &num_parsed_samples);
+                if (parse_ret == ESP_OK) {
+                    for (int i = 0; i < num_parsed_samples; i++) 
+                    {
+                        if (parsed_data[i].valid ) {
+                            // if (count % 50 ==0 && i == 0 )
+                            //     ESP_LOGI(TAG, "ADC%d, Channel: %d, Value: %"PRIu32,
+                            //          parsed_data[i].unit + 1,
+                            //          parsed_data[i].channel,
+                            //          parsed_data[i].raw_data);
+                            C2data[i] = parsed_data[i].raw_data;
+                        } else {
+                            // ESP_LOGW(TAG, "Invalid data [ADC%d_Ch%d_%"PRIu32"]",
+                            //          parsed_data[i].unit + 1,
+                            //          parsed_data[i].channel,
+                            //          parsed_data[i].raw_data);
+
+                        }
+                    }
+
+                    writeIndex = (  writeIndex + num_parsed_samples ) % sizeof(C2data);
+                } else {
+                    ESP_LOGE(TAG, "Data parsing failed: %s", esp_err_to_name(parse_ret));
+                }
+
+                /**
+                 * Because printing is slow, so every time you call `ulTaskNotifyTake`, it will immediately return.
+                 * To avoid a task watchdog timeout, add a delay here. When you replace the way you process the data,
+                 * usually you don't need this delay (as this task will block for a while).
+                 */
+                vTaskDelay(1);
+            } else if (ret == ESP_ERR_TIMEOUT) {
+                //We try to read `EXAMPLE_READ_LEN` until API returns timeout, which means there's no available data
+                break;
+            }
+        }
+    }
+
+    ESP_ERROR_CHECK(adc_continuous_stop(handle));
+    ESP_ERROR_CHECK(adc_continuous_deinit(handle));
 }
