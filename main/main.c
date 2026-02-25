@@ -78,7 +78,7 @@ enum {
 
 #define EXAMPLE_ADC_UNIT                    ADC_UNIT_1
 #define EXAMPLE_ADC_CONV_MODE               ADC_CONV_SINGLE_UNIT_1
-#define EXAMPLE_ADC_ATTEN                   ADC_ATTEN_DB_12
+#define EXAMPLE_ADC_ATTEN                   ADC_ATTEN_DB_0
 #define EXAMPLE_ADC_BIT_WIDTH               SOC_ADC_DIGI_MAX_BITWIDTH
 
 #define EXAMPLE_READ_LEN                    256
@@ -441,7 +441,7 @@ static void bt_app_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 
 int writeIndex = -1;
 int readIndex = -1;
-uint8_t C2data[2048];
+int16_t C2data[2048];
 
 
 TaskHandle_t Task0;
@@ -494,16 +494,29 @@ static int32_t bt_app_a2d_data_cb(uint8_t *data, int32_t len)
         else 
             readIndex = (writeIndex + sizeof(C2data)/2)%sizeof(C2data);
     }
+    static int16_t data123= 0 ;
     int16_t *p_buf = (int16_t *)data;
+    // for (int i = 0; i < (len >> 1); i++) {
+
+    //     double angle = double_Pi * c3_frequency * m_time + m_phase;
+    //     // p_buf[2*i] =   m_amplitude * sin(angle);//C2data[ readIndex + i*2] ;
+    //     // p_buf[2*i+1]=  p_buf[2*i]  = 0;//C2data[readIndex + i*2+1];//p_buf[2*i] ;
+    //     // m_time += m_deltsubCategories.get(URL) == nullaTime;
+    //    p_buf[i] = rand() % (1 << 16);
+    // }
+
     for (int i = 0; i < (len >> 1); i++) {
 
-        //double angle = double_Pi * c3_frequency * m_time + m_phase;
-        p_buf[2*i] =  C2data[ readIndex + i*2] ;// m_amplitude * sin(angle);
-        p_buf[2*i+1]=  C2data[readIndex + i*2+1];//p_buf[2*i] ;
-        m_time += m_deltaTime;
-    //    p_buf[i] = rand() % (1 << 16);
+        double angle = double_Pi * c3_frequency * m_time + m_phase;
+        // p_buf[2*i] =   m_amplitude * sin(angle);//C2data[ readIndex + i*2] ;
+        // p_buf[2*i+1]=  p_buf[2*i]  = 0;//C2data[readIndex + i*2+1];//p_buf[2*i] ;
+        // m_time += m_deltaTime;
+        data123 += 100;
+        p_buf[2*i] = data123  ; //rand() % (1 << 16);
+        p_buf[2*i+1] = 0 ; //rand() % (1 << 16);
     }
     readIndex = (readIndex + len) % sizeof(C2data); 
+    // vTaskDelay(1);
 
 
     return len;
@@ -973,7 +986,6 @@ void app_main_adc( void * parameter)
     ESP_ERROR_CHECK(adc_continuous_start(handle));
 
     int count = 0 ;
-    int i =0;
 
     while (1) {
 
@@ -1013,12 +1025,14 @@ void app_main_adc( void * parameter)
                     for (int i = 0; i < num_parsed_samples; i++) 
                     {
                         if (parsed_data[i].valid ) {
-                            // if (count % 50 ==0 && i == 0 )
-                            //     ESP_LOGI(TAG, "ADC%d, Channel: %d, Value: %"PRIu32,
-                            //          parsed_data[i].unit + 1,
-                            //          parsed_data[i].channel,
-                            //          parsed_data[i].raw_data);
-                            C2data[i] = parsed_data[i].raw_data;
+                            // if (count % 50 ==0  )
+                                // ESP_LOGI(TAG, "ADC%d, Channel: %d, Value: %"PRIu32,
+                                //      parsed_data[i].unit + 1,
+                                //      parsed_data[i].channel,
+                                //      parsed_data[i].raw_data);
+                            C2data[i] = (int16_t)(parsed_data[i].raw_data - (1<<11)) ;
+                            // ESP_LOGI(TAG, "ADC  raw_data: %d, compensated: %d", parsed_data[i].raw_data, C2data[i]  );
+
                         } else {
                             // ESP_LOGW(TAG, "Invalid data [ADC%d_Ch%d_%"PRIu32"]",
                             //          parsed_data[i].unit + 1,
